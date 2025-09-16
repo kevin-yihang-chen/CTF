@@ -153,9 +153,9 @@ class DAttention(nn.Module):
             nn.Tanh(),
             nn.Linear(self.D, self.K)
         )
-        self.classifier = nn.Sequential(
-            nn.Linear(self.L*self.K, n_classes),
-        )
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(self.L*self.K, n_classes),
+        # )
         
         self.apply(initialize_weights)
 
@@ -169,8 +169,9 @@ class DAttention(nn.Module):
         return kl_mean
 
     def forward(self, x, label=None, return_attn=False,no_norm=False, pretrain=False, club=None):    
-        feature = self.feature(x)
-        feature = feature.squeeze(0)
+        # feature = self.feature(x)
+        # feature = feature.squeeze(0)
+        feature = x.squeeze(0)
         A = self.attention(feature)
         A_ori = A.clone().detach()
         A = torch.transpose(A, -1, -2)  # KxN
@@ -183,3 +184,11 @@ class DAttention(nn.Module):
         # Y_prob = F.softmax(x)
         # return x, Y_hat, Y_prob
         return M
+
+    def get_attn(self, x):
+
+        feature = x.squeeze(0)
+        A = self.attention(feature)
+        A_ori = A.clone().detach()
+
+        return A_ori

@@ -6,6 +6,7 @@ import os
 import math
 import shutil
 import warnings
+import wandb
 
 warnings.filterwarnings('ignore')
 
@@ -30,8 +31,6 @@ parser = argparse.ArgumentParser(description='Configurations for WSI Training')
 parser.add_argument('--data_root_dir', type=str, default=None, 
                     help='data directory')
 parser.add_argument('--rad_dir', type=str, default=None, 
-                    help='data directory')
-parser.add_argument('--st_dir', type=str, default=None, 
                     help='data directory')
 parser.add_argument('--max_epochs', type=int, default=200,
                     help='maximum number of epochs to train (default: 200)')
@@ -62,7 +61,7 @@ parser.add_argument('--model_type', type=str, choices=['hipt_lgp', 'hipt_n', 'hi
 parser.add_argument('--exp_code', type=str, help='experiment code for saving results')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='enable weighted sampling')
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
-parser.add_argument('--task', type=str, choices=['RCC', 'camelyon16', 'BRCA', 'NSCLC', 'ESCA_typing', 'task_1_tumor_vs_normal',  'task_2_tumor_subtyping', 'BRCA_HER2', 'STAD_EBVMSI', 'CRC_MSI', 'ESCA', 'PRAD', 'BRCA_SV', 'BRCA_SV_IDC', 'NSCLC_SV_LUAD', 'RCC_SV_CCRCC', 'RCC_SV_PRCC', 'STAD_SV', 'BLCA_SV', 'SYSU_SV'])
+parser.add_argument('--task', type=str, choices=['SYSU_SV','LGG_SV'])
 ### CLAM specific options
 parser.add_argument('--no_inst_cluster', action='store_true', default=False,
                      help='disable instance-level clustering')
@@ -87,13 +86,16 @@ parser.add_argument('--gate_scale', default=100., type=float, help="constant for
 parser.add_argument('--gate_center', default= 3., type=float, help="constant for token control gate re-center, negatived when applied")
 parser.add_argument('--warmup_epoch', default=0, type=int, help="warm up epochs for act")
 parser.add_argument('--distr_prior_alpha', default=0.001, type=float, help="scaling for kl of distributional prior")
-
+parser.add_argument('--pretrain', default=None, type=str, help="pretrained model path")
 parser.add_argument('--survival', action='store_true', default=False, 
                      help='survival prediction problem')
 parser.add_argument('--fuse', default=None, type=str, help='fuse modalities')
+parser.add_argument('--PT', action='store_true', help='whether to use prompt tuning')
+parser.add_argument('--n_ctx', default=8, type=int, help='number of prompt tokens')
+parser.add_argument('--cls_hidden_dim', default=128, type=int, help='hidden dimension of the classifier')
+parser.add_argument('--cls_layers', default=1, type=int, help='number of layers in the classifier')
 
 args = parser.parse_args()
-
 
 
 def main(args):
@@ -110,17 +112,41 @@ def main(args):
     else:
         end = args.k_end
 
+
     all_test_auc = []
     all_val_auc = []
     all_test_acc = []
     all_val_acc = []
     folds = np.arange(start, end)
+
+    run = wandb.init(entity='yihangc',
+                     project='CTF_sweep',
+                     group=args.test_name,
+                     name=args.test_name,
+                     config=settings)
+
+    unique_test_name = f"{args.test_name}_{wandb.run.id}"
+    args.test_name = unique_test_name
+    print(f"Unique test name: {unique_test_name}")
+
+    if not os.path.isdir(args.results_dir):
+        os.mkdir(args.results_dir)
+
+    args.results_dir = os.path.join(args.results_dir, str(args.exp_code),
+                                    's{}'.format(args.seed) + '_' + args.test_name)
+
+    if os.path.exists(args.results_dir):
+        shutil.rmtree(args.results_dir)
+    os.makedirs(args.results_dir)
+
     for i in folds:
+
         seed_torch(args.seed)
         train_dataset, val_dataset, test_dataset = dataset.return_splits(from_id=False, 
                 csv_path='{}/splits_{}.csv'.format(args.split_dir, i))
         datasets = (train_dataset, val_dataset, test_dataset)
         results, test_auc, val_auc, test_acc, val_acc  = train(datasets, i, args)
+        # wandb.log({f'fold_{i}_val_c_index': val_auc, f'fold_{i}_test_c_index': test_auc})
         all_test_auc.append(test_auc)
         all_val_auc.append(val_auc)
         all_test_acc.append(test_acc)
@@ -133,6 +159,8 @@ def main(args):
 
         if i == folds[-1]:
             fold_col.append('mean')
+            wandb.log({'mean_test_c_index': np.mean(all_test_auc),
+                       'mean_val_c_index': np.mean(all_val_auc)})
             all_test_auc.append(np.mean(all_test_auc))
             all_val_auc.append(np.mean(all_val_auc))
             all_test_acc.append(np.mean(all_test_acc))
@@ -152,6 +180,8 @@ def main(args):
         else:
             save_name = 'summary.csv'
         final_df.to_csv(os.path.join(args.results_dir, save_name))
+
+        run.finish()
 
 
 
@@ -203,7 +233,6 @@ if args.task == 'SYSU_SV':
     dataset = Generic_MIL_Dataset(csv_path = '/data1/WSI/Pathology_Radiology/Dataset/SYSU/sysu_label_clean.csv',
                             data_dir= args.data_root_dir,
                             rad_dir = args.rad_dir,
-                            st_dir = args.st_dir,
                             shuffle = False, 
                             seed = args.seed, 
                             print_info = True,
@@ -213,19 +242,22 @@ if args.task == 'SYSU_SV':
                             ignore=[],
                             survival=True)
 
-    # import ipdb;ipdb.set_trace()
+elif args.task == 'LGG_SV':
+    args.n_classes = 4
+    dataset = Generic_MIL_Dataset(csv_path = '/data1/yhchen/TCGA-LGG/TCGA-LGG_survival_info.csv',
+                            data_dir= args.data_root_dir,
+                            rad_dir = args.rad_dir,
+                            shuffle = False,
+                            seed = args.seed,
+                            print_info = True,
+                            label_dict = {0:0, 1:1, 2:2, 3:3},
+                            patient_strat=False,
+                            label_col='survival_interval',
+                            ignore=[],
+                            survival=True)
 else:
     raise NotImplementedError
-    
-if not os.path.isdir(args.results_dir):
-    os.mkdir(args.results_dir)
 
-# args.results_dir = os.path.join(args.results_dir, str(args.exp_code) + '_s{}'.format(args.seed) + '_' + args.test_name)
-args.results_dir = os.path.join(args.results_dir, str(args.exp_code), 's{}'.format(args.seed) + '_' + args.test_name)
-# if not os.path.isdir(args.results_dir):
-if os.path.exists(args.results_dir):
-    shutil.rmtree(args.results_dir)
-os.makedirs(args.results_dir)
 
 if args.split_dir is None:
     args.split_dir = os.path.join('10fold_splits', args.task + '_{}'.format(int(args.label_frac*100)))

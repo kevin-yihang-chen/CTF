@@ -1,4 +1,6 @@
 from __future__ import print_function, division
+
+import glob
 import os
 import torch
 import numpy as np
@@ -69,7 +71,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		self.train_ids, self.val_ids, self.test_ids  = (None, None, None)
 		self.data_dir = None
 		self.rad_dir = None
-		self.st_dir = None
+		self.csv_path = csv_path
 		self.output_slide_ids = output_slide_ids
 		if not label_col:
 			label_col = 'label'
@@ -208,7 +210,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		if len(split) > 0:
 			mask = self.slide_data['slide_id'].isin(split.tolist())
 			df_slice = self.slide_data[mask].reset_index(drop=True)
-			split = Generic_Split(df_slice, data_dir=self.data_dir, rad_dir=self.rad_dir, st_dir=self.st_dir, num_classes=self.num_classes)
+			split = Generic_Split(df_slice, data_dir=self.data_dir, rad_dir=self.rad_dir, num_classes=self.num_classes)
 		else:
 			split = None
 		
@@ -224,7 +226,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		if len(split) > 0:
 			mask = self.slide_data['slide_id'].isin(merged_split)
 			df_slice = self.slide_data[mask].reset_index(drop=True)
-			split = Generic_Split(df_slice, data_dir=self.data_dir, rad_dir=self.rad_dir, st_dir=self.st_dir, num_classes=self.num_classes)
+			split = Generic_Split(df_slice, data_dir=self.data_dir, rad_dir=self.rad_dir, num_classes=self.num_classes)
 		else:
 			split = None
 		
@@ -237,21 +239,21 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		if from_id:
 			if len(self.train_ids) > 0:
 				train_data = self.slide_data.loc[self.train_ids].reset_index(drop=True)
-				train_split = Generic_Split(train_data, data_dir=self.data_dir, rad_dir=self.rad_dir, st_dir=self.st_dir, num_classes=self.num_classes)
+				train_split = Generic_Split(train_data, data_dir=self.data_dir, rad_dir=self.rad_dir, num_classes=self.num_classes)
 
 			else:
 				train_split = None
 			
 			if len(self.val_ids) > 0:
 				val_data = self.slide_data.loc[self.val_ids].reset_index(drop=True)
-				val_split = Generic_Split(val_data, data_dir=self.data_dir, rad_dir=self.rad_dir, st_dir=self.st_dir, num_classes=self.num_classes)
+				val_split = Generic_Split(val_data, data_dir=self.data_dir, rad_dir=self.rad_dir, num_classes=self.num_classes)
 
 			else:
 				val_split = None
 			
 			if len(self.test_ids) > 0:
 				test_data = self.slide_data.loc[self.test_ids].reset_index(drop=True)
-				test_split = Generic_Split(test_data, data_dir=self.data_dir, rad_dir=self.rad_dir, st_dir=self.st_dir, num_classes=self.num_classes)
+				test_split = Generic_Split(test_data, data_dir=self.data_dir, rad_dir=self.rad_dir, num_classes=self.num_classes)
 			
 			else:
 				test_split = None
@@ -333,14 +335,12 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 	def __init__(self,
 		data_dir,
 		rad_dir,
-		st_dir,
 		survival=True,
 		**kwargs):
 	
 		super(Generic_MIL_Dataset, self).__init__(**kwargs)
 		self.data_dir = data_dir
 		self.rad_dir = rad_dir
-		self.st_dir = st_dir
 		# self.use_h5 = False
 		self.use_h5 = True
 		self.survival = survival
@@ -354,44 +354,22 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 
 	def __getitem__(self, idx):
 		slide_id = self.slide_data['slide_id'][idx]
-		if type(self.data_dir) == dict:
-			source = self.slide_data['source'][idx]
-			data_dir = self.data_dir[source]
-		else:
-			data_dir = self.data_dir
+		data_dir = self.data_dir
 		rad_dir = self.rad_dir
-		st_dir = self.st_dir
+		if 'sysu' in self.data_dir or 'SYSU' in self.data_dir:
+			self.pyradiomics = '/data1/yhchen/sysu_pyradiomics'
+		else:
+			self.pyradiomics = None
 
-		# if not self.use_h5:
-		# 	if self.data_dir:
-		# 		full_path = os.path.join(data_dir, 'pt_files', '{}.pt'.format(slide_id))
-		# 		features = torch.load(full_path)
-		# 		# print(features.shape)
-		# 		return features, label
-			
-		# 	else:
-		# 		return slide_id, label
+		# load pathology features
+		path_path = os.path.join(data_dir,'h5_files','{}.h5'.format(slide_id))
+		with h5py.File(path_path,'r') as hdf5_file:
+			path_features = hdf5_file['features'][:]
+			coords = hdf5_file['coords'][:]
+		path_features = torch.from_numpy(path_features)
 
-		# else:
-
-		self.graph = False
-		self.pyradiomics = '/data1/yhchen/sysu_pyradiomics'
-		if not self.graph:
-			# load pathology features
-			path_path = os.path.join(data_dir,'h5_files','{}.h5'.format(slide_id))
-			with h5py.File(path_path,'r') as hdf5_file:
-				path_features = hdf5_file['features'][:]
-				coords = hdf5_file['coords'][:]
-			path_features = torch.from_numpy(path_features)
-
-			# load st features
-			st_path = os.path.join(st_dir,'h5_files','{}.h5'.format(slide_id))
-			with h5py.File(st_path,'r') as hdf5_file:
-				st_features = hdf5_file['features'][:]
-				coords = hdf5_file['coords'][:]
-			st_features = torch.from_numpy(st_features)
-
-			# load radiology features
+		if 'sysu' in self.data_dir or 'SYSU' in self.data_dir:
+			# load radiology features from in-house dataset
 			radiology_path = os.path.join(rad_dir,'{}.dcm'.format(self.slide_data['radiology_id'][idx]))
 			mask_path = os.path.join(rad_dir,'{}_mask.nii'.format(self.slide_data['radiology_id'][idx]))
 			rad_img = pydicom.dcmread(radiology_path).pixel_array
@@ -403,42 +381,72 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 			rad_img = rad_img * mask_img.permute(2,0,1)
 			rad_img = self.rad_transform(rad_img)
 
+
 			# load pyradiomics features
-			pyradiomics_path = os.path.join(self.pyradiomics,'{}.npy'.format(self.slide_data['radiology_id'][idx]))
-			pyradiomics_features = np.load(pyradiomics_path)
-			pyradiomics_features = torch.from_numpy(pyradiomics_features)
+			# pyradiomics_path = os.path.join(self.pyradiomics,'{}.npy'.format(self.slide_data['radiology_id'][idx]))
+			# pyradiomics_features = np.load(pyradiomics_path)
+			# pyradiomics_features = torch.from_numpy(pyradiomics_features)
+			pyradiomics_features = None
 
-			# load survival data
-			censor = self.slide_data['censor'][idx]
-			censor = 0 if censor == 1 else 1
-			survival_days = self.slide_data['survival_days'][idx]
-			survival_interval = self.slide_data['survival_interval'][idx]
-
-			# return features, features2, label, slide_id, coords, self.slide_data['case_id'][idx]
-			return path_features, rad_img, pyradiomics_features, censor, survival_days, survival_interval, slide_id, coords
-			# return st_features, st_features, st_features, censor, survival_days, survival_interval, slide_id, coords
+		elif 'Beijing' in self.data_dir:
+			rad_id = self.slide_data['radiology_id'][idx]
+			radiology_path = os.path.join(rad_dir, rad_id)
+			mask_path = radiology_path.replace('img', 'seg')
+			img_nii = nib.load(radiology_path)
+			mask_nii = nib.load(mask_path)
+			image = img_nii.get_fdata(dtype=np.float32)
+			mask = mask_nii.get_fdata(dtype=np.float32)
+			try:
+				masked_image = image * mask
+			except:
+				image = np.squeeze(image)
+				mask = np.squeeze(mask)
+				masked_image = image * mask
+			masked_image = torch.from_numpy(masked_image)
+			T = masked_image.shape[2]
+			rad_img_re = torch.zeros((T, 3, 224, 224))
+			for t in range(T):
+				rad_img_2D = masked_image[:, :, t]
+				rad_img_2D = rad_img_2D / (rad_img_2D.max() + 1e-5)
+				rad_img_2D = rad_img_2D.unsqueeze(0).repeat(3, 1, 1)
+				rad_img_2D = self.rad_transform(rad_img_2D)
+				rad_img_re[t] = rad_img_2D
+			rad_img = rad_img_re
 
 		else:
-			full_path = os.path.join(data_dir,'graph_files','{}.pt'.format(slide_id))
-			features = torch.load(full_path)
-			label = self.slide_data['label'][idx]
-			censor = self.slide_data['censor'][idx]
-			censor = 0 if censor == 1 else 1
-			survival_days = self.slide_data['survival_days'][idx]
-			survival_interval = self.slide_data['survival_interval'][idx]
-			# return features, features2, label, slide_id, coords, self.slide_data['case_id'][idx]
-			return features, None, censor, survival_days, survival_interval, slide_id, None
-	
-		# return features, features2, label
+			# load radiology features from TCGA dataset
+			radiology_path = os.path.join(rad_dir,'{}'.format(slide_id[:12]))
+			radiology_path = glob.glob(radiology_path + '/*')[0]
+			rad_img = nib.load(radiology_path).get_fdata().astype(np.float32)
+			rad_img = torch.from_numpy(rad_img)
+			T = rad_img.shape[2]
+			rad_img_re = torch.zeros((T,3,224,224))
+			for t in range(T):
+				rad_img_2D = rad_img[:,:,t]
+				rad_img_2D = rad_img_2D/(rad_img_2D.max()+1e-5)
+				rad_img_2D = rad_img_2D.unsqueeze(0).repeat(3,1,1)
+				rad_img_2D = self.rad_transform(rad_img_2D)
+				rad_img_re[t] = rad_img_2D
+			rad_img = rad_img_re
+			pyradiomics_features = None
+
+		# load survival data
+		censor = self.slide_data['censor'][idx]
+		censor = 0 if censor == 0 else 1
+		survival_days = self.slide_data['survival_days'][idx]
+		survival_interval = self.slide_data['survival_interval'][idx]
+
+		# return features, features2, label, slide_id, coords, self.slide_data['case_id'][idx]
+		return path_features, rad_img, pyradiomics_features, censor, survival_days, survival_interval, slide_id, coords
+		# return st_features, st_features, st_features, censor, survival_days, survival_interval, slide_id, coords
 
 
 class Generic_Split(Generic_MIL_Dataset):
-	def __init__(self, slide_data, data_dir=None, rad_dir=None, st_dir=None, num_classes=2, survival=True):
+	def __init__(self, slide_data, data_dir=None, rad_dir=None, num_classes=2, survival=True):
 		self.use_h5 = False
 		self.slide_data = slide_data
 		self.data_dir = data_dir
 		self.rad_dir = rad_dir
-		self.st_dir = st_dir
 		self.num_classes = num_classes
 		self.survival = survival
 		self.slide_cls_ids = [[] for i in range(self.num_classes)]

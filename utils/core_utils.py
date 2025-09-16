@@ -1,31 +1,18 @@
 import numpy as np
 import torch
+import torch.nn as nn
 from utils.utils import *
 import os
 from datasets.dataset_generic import save_splits
-from models.model_mil import MIL_fc, MIL_fc_mc
-from models.model_clam import CLAM_MB, CLAM_SB
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.metrics import auc as calc_auc
-# from models.tcformer import tcformer
-from models.tnt import HIT
-from models.transmil import TransMIL
-# from models.tnt import TNT
-from models.model_dsmil import FCLayer, BClassifier, MILNet
-from models.model_hierarchical_mil import HIPT_None_FC, HIPT_LGP_FC
-from models.vmamba import VSSM
-from models.dtfdmil import DTFD_MIL
-from models.s4 import S4Model
-from models.wikg import WiKG
-# from models.mambamil import MambaMIL
-from models.patchgcn import PatchGCN_Surv
 from models.par import PaR
-from tqdm import tqdm
 import time
 from sksurv.metrics import concordance_index_censored
 from .loss_func import NLLSurvLoss
-from .loss_func import l1_reg_modules
+import wandb
+
 
 def ce_loss(hazards, S, Y, c, alpha=0.4, eps=1e-7):
     batch_size = len(Y)
@@ -196,53 +183,15 @@ def train(datasets, cur, args):
         # else:
         instance_loss_fn = nn.CrossEntropyLoss()
 
-        if args.model_type =='clam_sb':
-            model = CLAM_SB(**model_dict, instance_loss_fn=instance_loss_fn)
-        elif args.model_type == 'clam_mb':
-            model = CLAM_MB(**model_dict, instance_loss_fn=instance_loss_fn)
-        elif args.model_type == 'hit':
-            model = HIT(n_classes=args.n_classes)
-            # model = TransMIL()
-        elif args.model_type == 'transmil':
-            model = TransMIL(n_classes=args.n_classes)
-        elif args.model_type == 'dsmil':
-            i_classifier = FCLayer(in_size=768, out_size=model_dict['n_classes'])
-            b_classifier = BClassifier(input_size=768, output_class=model_dict['n_classes'], dropout_v=0.0)
-            model = MILNet(i_classifier, b_classifier)
-        elif args.model_type == 'mamba':
-            model = VSSM(**model_dict)
-        elif args.model_type == 'dtfdmil':
-            model = DTFD_MIL(n_classes=args.n_classes)
-        elif args.model_type == 's4':
-            model = S4Model(n_classes=args.n_classes)
-        elif args.model_type == 'wikg':
-            model = WiKG(n_classes=args.n_classes)
-        elif args.model_type == 'mambamil':
-            # model = MambaMIL(n_classes=args.n_classes)
-            raise NotImplementedError
-        elif args.model_type == 'patchgcn':
-            model = PatchGCN_Surv(n_classes=args.n_classes)
-        elif args.model_type == 'moe':
-            model = PaR(n_classes=args.n_classes) 
+        if args.model_type == 'moe':
+            model = PaR(n_classes=args.n_classes,concept_risk_align=False,args=args)
         else:
             raise NotImplementedError
+    else:
+        raise NotImplementedError
 
         # model.half()
 
-
-    elif 'hipt' in args.model_type:
-        if args.model_type == 'hipt_n':
-            model = HIPT_None_FC(**model_dict)
-        elif args.model_type == 'hipt_lgp':
-            model = HIPT_LGP_FC(**model_dict, freeze_4k=True, pretrain_4k='vit4k_xs_dino', freeze_WSI=True, pretrain_WSI='None')
-
-
-
-    else: # args.model_type == 'mil'
-        if args.n_classes > 2:
-            model = MIL_fc_mc(**model_dict)
-        else:
-            model = MIL_fc(**model_dict)
     # model.relocate()
     if hasattr(model, "relocate"):
         model.relocate()
@@ -287,6 +236,9 @@ def train(datasets, cur, args):
                 raise NotImplementedError
         elif args.model_type in ['hit', 'dsmil', 'hipt_lgp', 'hipt_n', 'mamba', 'transmil', 'dtfdmil', 's4', 'wikg', 'mambamil', 'patchgcn', 'moe'] and not args.no_inst_cluster:
             if args.survival:
+                if args.pretrain:
+                    model.load_state_dict(torch.load(args.pretrain), strict=True)
+                    print('Loading pretrained model from {}'.format(args.pretrain))
                 train_loop_hit_surv(epoch, model, train_loader, optimizer, args.n_classes, args.bag_weight, args, writer, loss_fn, model_type=args.model_type)
                 stop = validate_hit_surv(cur, epoch, model, val_loader, args.n_classes, 
                     args, early_stopping, writer, loss_fn, args.results_dir)
@@ -309,6 +261,8 @@ def train(datasets, cur, args):
 
     if args.early_stopping:
         model.load_state_dict(torch.load(os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(cur))))
+        # delete the checkpoint
+        os.remove(os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(cur)))
     else:
         torch.save(model.state_dict(), os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(cur)))
     
@@ -539,7 +493,7 @@ def train_loop_hit_surv(epoch, model, loader, optimizer, n_classes, bag_weight, 
         if model_type != 'dtfdmil':
 
             if args.fuse == 'PIBD':
-                logits, IB_loss_proxy, proxy_loss, mimin_total, mimin_loss_total = model(data, data2, label, censor)
+                logits, IB_loss_proxy, proxy_loss, mimin_total, mimin_loss_total = model(data, data2, data3, y=label, c=censor)
 
                 loss_surv = loss_fn(h=logits, y=label, t=survival_days, c=censor)
 
@@ -587,6 +541,7 @@ def train_loop_hit_surv(epoch, model, loader, optimizer, n_classes, bag_weight, 
             print('\r' + f'Epoch: {epoch}, Progress: {(i / len(loader)):.2}, loss:{np.mean(losses):.2}', end='',
                   flush=True)
 
+
         else:
 
             logits0, Y_hat, Y_prob, slide_sub_preds = model(data, data2)
@@ -628,9 +583,140 @@ def train_loop_hit_surv(epoch, model, loader, optimizer, n_classes, bag_weight, 
     c_index = concordance_index_censored((1 - all_censorships).astype(bool),
             all_event_times, all_risk_scores, tied_tol=1e-08)[0]
 
-    print('Epoch: {}, train_loss: {:.4f}, c_index: {:.4f}'.format(epoch, train_loss,  c_index))
-    
+    # wandb.log({"train_loss": train_loss, "train_c_index": c_index})
 
+    print('Epoch: {}, train_loss: {:.4f}, c_index: {:.4f}'.format(epoch, train_loss,  c_index))
+
+
+def train_loop_hit(epoch, model, loader, optimizer, n_classes, args, writer=None, loss_fn=None,
+                   model_type='None'):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.train()
+    acc_logger = Accuracy_Logger(n_classes=n_classes)
+
+    train_loss = 0.
+    train_loss2 = 0.
+    train_error = 0.
+    train_inst_loss = 0.
+    losses = []
+
+    print('\n')
+
+    all_labels = np.zeros((len(loader)))
+    all_preds = np.zeros((len(loader)))
+
+    for name, param in model.named_parameters():
+        if name.startswith('radiology_model'):
+            if 'ctx' in name:
+                param.requires_grad_(True)
+            else:
+                param.requires_grad_(False)
+        elif name.startswith('pathology_model'):
+            if 'ctx' in name:
+                param.requires_grad_(True)
+            else:
+                param.requires_grad_(False)
+        elif name.startswith('mpmoe'):
+            if 'ctx' in name:
+                param.requires_grad_(True)
+            elif 'W_l' in name:
+                param.requires_grad_(True)
+            elif 'MoE' in name:
+                param.requires_grad_(True)
+            else:
+                param.requires_grad_(False)
+        else:
+            param.requires_grad_(True)
+
+    enabled = set()
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            enabled.add(name)
+    print(f"Parameters to be updated: {enabled}")
+    print(f"Parameters count: {len(enabled)}")
+
+    for i, (data, data2, label, slide_id, coords) in enumerate(loader):
+        try:
+            data, data2, label = data.to(device, non_blocking=True), data2.to(device, non_blocking=True), label.to(
+                device, non_blocking=True)
+        except:
+            data, censor, survival_days, label = data[0].to(device, non_blocking=True), censor.to(device,
+                                                                                                  non_blocking=True), survival_days.to(
+                device, non_blocking=True), label.to(device, non_blocking=True)
+        if model_type != 'dtfdmil':
+
+            if args.fuse == 'PIBD':
+                logits, IB_loss_proxy, proxy_loss, mimin_total, mimin_loss_total = model(data, data2, None, y=label,
+                                                                                         c=censor)
+                loss_cls = loss_fn(logits, label)
+                loss = loss_cls + 1 * proxy_loss + 0.1 * IB_loss_proxy + 0.1 * (
+                        mimin_total + mimin_loss_total)
+                Y_hat = torch.argmax(logits, dim=1)
+
+
+            else:
+                logits, Y_hat, Y_prob, _ = model(data, data2, None)
+                loss = loss_fn(logits, label)
+                if args.fuse == 'MOTCAT':
+                    reg_loss = 0
+                elif args.fuse == 'MPMoE':
+                    cv_loss = _
+                    loss = loss + cv_loss
+
+
+            loss.backward()
+            loss_value = loss.item()
+            train_loss += loss_value
+
+            optimizer.step()
+            optimizer.zero_grad()
+
+            losses.append(loss_value)
+            print('\r' + f'Epoch: {epoch}, Progress: {(i / len(loader)):.2}, loss:{np.mean(losses):.2}', end='',
+                  flush=True)
+
+
+        else:
+
+            logits0, Y_hat, Y_prob, slide_sub_preds = model(data, data2)
+
+            # acc_logger.log(Y_hat, label)
+
+            # import ipdb;ipdb.set_trace()
+            slide_sub_labels = label.repeat(slide_sub_preds.size(0))
+            # slide_sub_labels = torch.repeat(label, slide_sub_preds.size(0))
+            loss0 = loss_fn(slide_sub_preds, slide_sub_labels).mean()
+            optimizer[0].zero_grad()
+            loss0.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(model.dimReduction.parameters(), 5)
+            torch.nn.utils.clip_grad_norm_(model.attention.parameters(), 5)
+            torch.nn.utils.clip_grad_norm_(model.classifier.parameters(), 5)
+            # optimizer[0].step()
+
+            loss1 = loss_fn(logits0, label).mean()
+            optimizer[1].zero_grad()
+            loss1.backward()
+            torch.nn.utils.clip_grad_norm_(model.attCls.parameters(), 5)
+            optimizer[0].step()
+            optimizer[1].step()
+
+            # loss = loss_fn(logits0, label)
+            loss_value = loss0.item() + loss1.item()
+
+            # total_loss = loss
+            train_loss += loss_value
+            error = calculate_error(Y_hat, label)
+            train_error += error
+
+        all_labels[i] = label.item()
+        all_preds[i] = Y_hat.item()
+
+    train_loss /= len(loader)
+    acc = np.mean(all_labels == all_preds)
+
+    wandb.log({"train_loss": train_loss, "train_acc": acc})
+
+    print('Epoch: {}, train_loss: {:.4f}, acc: {:.4f}'.format(epoch, train_loss, acc))
 
 def train_loop(epoch, model, loader, optimizer, n_classes, writer = None, loss_fn = None):   
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu") 
@@ -909,84 +995,54 @@ def validate_clam_surv(cur, epoch, model, loader, n_classes, early_stopping = No
 
     return False 
 
-def validate_hit(cur, epoch, model, loader, n_classes, early_stopping = None, writer = None, loss_fn = None, results_dir = None):
-    device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def validate_hit(cur, epoch, model, loader, n_classes, args, early_stopping = None, writer = None, loss_fn = None, results_dir = None):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
-    acc_logger = Accuracy_Logger(n_classes=n_classes)
-    inst_logger = Accuracy_Logger(n_classes=n_classes)
+
     val_loss = 0.
     val_error = 0.
 
     val_inst_loss = 0.
-    inst_count=0
-    
+    inst_count = 0
+
     prob = np.zeros((len(loader), n_classes))
     labels = np.zeros(len(loader))
-    # sample_size = model.k_sample
+    all_labels = np.zeros((len(loader)))
+    all_preds = np.zeros((len(loader)))
     with torch.no_grad():
-        for batch_idx, (data, data2, label, slide_id, coords) in enumerate(loader):
-            data, data2, label = data.to(device), data2.to(device), label.to(device)      
-            logits, Y_hat, Y_prob, _ = model(data, data2)
-            acc_logger.log(Y_hat, label)
-            
-            loss = loss_fn(logits, label)
-            val_loss += loss.item()
-
-            # import ipdb;ipdb.set_trace()
-            prob[batch_idx] = Y_prob.cpu().numpy()
-            labels[batch_idx] = label.item()
-            
-            error = calculate_error(Y_hat, label)
-            val_error += error
-
-    val_error /= len(loader)
-    val_loss /= len(loader)
-
-    if n_classes == 2:
-        auc = roc_auc_score(labels, prob[:, 1])
-        aucs = []
-    else:
-        aucs = []
-        binary_labels = label_binarize(labels, classes=[i for i in range(n_classes)])
-        for class_idx in range(n_classes):
-            if class_idx in labels:
-                fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], prob[:, class_idx])
-                aucs.append(calc_auc(fpr, tpr))
+        for i, (data, data2, label, slide_id, coords) in enumerate(loader):
+            try:
+                data, data2, data3, label = data.to(device), data2.to(device), data3.to(device), label.to(device)
+            except:
+                data, label = data[0].to(device), label.to(device)
+            if args.fuse == 'PIBD':
+                h, _, _, _, _ = model(data, data2)
+                if len(h.shape) == 1:
+                    h = h.unsqueeze(0)
+                label =  label.to(device)
+                loss = loss_fn(h, label)
+                val_loss += loss.item()
+                Y_hat = torch.argmax(logits, dim=1)
             else:
-                aucs.append(float('nan'))
+                logits, Y_hat, Y_prob, _ = model(data, data2, data3)
+                loss = loss_fn(logits, label)
+                val_loss += loss.item()
 
-        auc = np.nanmean(np.array(aucs))
+            all_labels[i] = label.item()
+            all_preds[i] = Y_hat.item()
 
-    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}'.format(val_loss, val_error, auc))
-    # if inst_count > 0:
-    #     val_inst_loss /= inst_count
-    #     for i in range(2):
-    #         acc, correct, count = inst_logger.get_summary(i)
-    #         print('class {} clustering acc {}: correct {}/{}'.format(i, acc, correct, count))
-    
-    if writer:
-        writer.add_scalar('val/loss', val_loss, epoch)
-        writer.add_scalar('val/auc', auc, epoch)
-        writer.add_scalar('val/error', val_error, epoch)
+    val_loss /= len(loader)
+    acc = np.mean(all_labels == all_preds)
 
-    acc_list = []
-    correct_list = []
-    count_list = []
-    for i in range(n_classes):
-        acc, correct, count = acc_logger.get_summary(i)
-        acc_list.append(acc)
-        correct_list.append(correct)
-        count_list.append(count)
-        print('class {}: acc {:.4f}, correct {}/{}'.format(i, acc, correct, count))
-        if writer and acc is not None:
-            writer.add_scalar('val/class_{}_acc'.format(i), acc, epoch)
-    print('Overall: acc {:.4f}, correct {}/{}'.format(np.sum(acc_list)/2, np.sum(correct_list), np.sum(count_list)))
-     
+    print('\nVal Set, val_loss: {:.4f}, acc: {:.4f}'.format(val_loss, acc))
+
+    # wandb.log({"val_loss": val_loss, "val_c_index": c_index})
+
     # import ipdb;ipdb.set_trace()
     if early_stopping:
         assert results_dir
-        early_stopping(epoch, val_loss, model, ckpt_name = os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
-        
+        early_stopping(epoch, val_loss, model, ckpt_name=os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
+
         if early_stopping.early_stop:
             print("Early stopping")
             return True
@@ -1061,6 +1117,8 @@ def validate_hit_surv(cur, epoch, model, loader, n_classes, args, early_stopping
             all_event_times, all_risk_scores, tied_tol=1e-08)[0]
 
     print('\nVal Set, val_loss: {:.4f}, c_index: {:.4f}'.format(val_loss, c_index))
+
+    # wandb.log({"val_loss": val_loss, "val_c_index": c_index})
      
     # import ipdb;ipdb.set_trace()
     if early_stopping:
@@ -1073,7 +1131,7 @@ def validate_hit_surv(cur, epoch, model, loader, n_classes, args, early_stopping
 
     return False
 
-def summary_my(model, loader, n_classes):
+def summary_my(model, loader, n_classes, args):
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     acc_logger = Accuracy_Logger(n_classes=n_classes)
     model.eval()
@@ -1089,8 +1147,19 @@ def summary_my(model, loader, n_classes):
     for batch_idx, (data, data2, label, slide_id, coords) in enumerate(loader):
         data, data2, label = data.to(device), data2.to(device), label.to(device)
         slide_id = slide_ids.iloc[batch_idx]
-        with torch.no_grad():
-            logits, Y_hat, Y_prob, _ = model(data, data2)
+
+        if args.fuse == 'PIBD':
+            h, _, _, _, _ = model(data, data2)
+            if len(h.shape) == 1:
+                h = h.unsqueeze(0)
+
+            logits = h
+            Y_hat = torch.argmax(logits, dim=1)
+            Y_prob = torch.softmax(logits, dim=1)
+
+        else:
+            logits, Y_hat, Y_prob, _ = model(data, data2, None)
+
 
         acc_logger.log(Y_hat, label)
         probs = Y_prob.cpu().numpy()

@@ -35,7 +35,10 @@ class SubsetSequentialSampler(Sampler):
 def collate_MIL(batch):
 	img = torch.cat([item[0] for item in batch], dim = 0)
 	img2 = torch.cat([item[1] for item in batch], dim = 0)
-	img3 = torch.cat([item[2] for item in batch], dim = 0)
+	try:
+		img3 = torch.cat([item[2] for item in batch], dim = 0)
+	except:
+		img3 = torch.zeros(1)
 	# label = torch.LongTensor([item[2] for item in batch])
 	censor = torch.LongTensor([item[3] for item in batch])
 	survival_months = torch.LongTensor([item[4] for item in batch])

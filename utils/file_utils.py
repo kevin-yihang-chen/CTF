@@ -17,6 +17,10 @@ def save_hdf5(output_path, asset_dict, attr_dict= None, mode='a'):
     file = h5py.File(output_path, mode)
     for key, val in asset_dict.items():
         data_shape = val.shape
+        try:
+            val = val.cpu().numpy()
+        except:
+            val = val
         if key not in file:
             data_type = val.dtype
             chunk_shape = (1, ) + data_shape[1:]
