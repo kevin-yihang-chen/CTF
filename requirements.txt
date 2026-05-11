@@ -1,0 +1,28 @@
+# Core
+torch>=2.0
+torchvision
+numpy
+pandas
+scipy
+h5py
+scikit-learn
+scikit-survival
+
+# Imaging I/O
+nibabel
+pydicom
+pillow
+
+# Foundation-model wrappers
+open_clip_torch
+# CONCH must be installed manually from https://github.com/mahmoodlab/CONCH
+# (the local checkpoint path is read from $CONCH_CKPT at runtime).
+
+# Excel I/O for the concept files (pandas read_excel backend)
+openpyxl
+
+# Logging
+wandb
+
+# LLM-driven concept generation
+requests

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project artefacts
+checkpoints/
+results/
+data_csv/
+wandb/
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.log
+*.tmp
+
+# Local notes
+TODO.md
+notes.md

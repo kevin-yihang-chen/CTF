@@ -1,0 +1,3 @@
+case_id,slide_id,radiology_id,censor,survival_days,survival_interval
+TCGA-CS-XXXX,TCGA-CS-XXXX-01Z-00-DX1,TCGA-CS-XXXX,1,365,1
+TCGA-CS-YYYY,TCGA-CS-YYYY-01Z-00-DX1,TCGA-CS-YYYY,0,1825,3
